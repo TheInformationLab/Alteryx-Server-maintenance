@@ -35,7 +35,7 @@ echo. >> %LogDir%BackupLog-%datetime%.log
 net stop AlteryxService >> %LogDir%BackupLog-%datetime%.log
 
 ::-----------------------------------------------------------------------------
-:: Backup MongoDB to local temp directory. 
+:: Backup MongoDB to local temp directory.
 ::-----------------------------------------------------------------------------
 
 echo %date% %time%: Starting MongoDB Backup >> %LogDir%BackupLog-%datetime%.log
@@ -46,7 +46,7 @@ mongodump --quiet -o %TempDir%\ServerBackup_%datetime%\Mongo >> %LogDir%BackupLo
 popd
 
 ::-----------------------------------------------------------------------------
-:: Backup MongoDB to local temp directory. 
+:: Backup MongoDB to local temp directory.
 ::-----------------------------------------------------------------------------
 
 echo. >> %LogDir%BackupLog-%datetime%.log
