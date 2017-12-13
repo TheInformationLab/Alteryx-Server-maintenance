@@ -13,9 +13,9 @@
 ::-----------------------------------------------------------------------------
 
 SET LogDir="D:\ProgramData\Alteryx\Backup Logs"
-SET TempDir=D:\Temp\
+SET TempDir="D:\Temp\"
 SET MongoBin="C:\Program Files\MongoDB\Server\3.4\bin\"
-SET BackupDir="\\schroders.com\dfs\datainsights\Transfer\Mike\AlteryxBackup"
+SET BackupDir="Z:\Backup\Logs"
 
 ::-----------------------------------------------------------------------------
 :: Set Date/Time to the format DD-MM-YYYY and create log
