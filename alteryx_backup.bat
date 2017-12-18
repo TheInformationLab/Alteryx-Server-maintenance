@@ -87,7 +87,7 @@ echo %date% %time%: Moving archive to network storage %BackupDir% >> %LogDir%Bac
 echo. >> %LogDir%BackupLog-%datetime%.log
 
 :: Be sure to update the UNC path for the network location to copy the file to.
-copy %TempDir%ServerBackup_%datetime%.7z %BackupDir%\ServerBackup_%datetime%.7z >> %LogDir%BackupLog-%datetime%.log
+robocopy %TempDir% %BackupDir% *.7z /mov >> %LogDir%BackupLog-%datetime%.log
 
 del %TempDir%ServerBackup_%datetime%.7z >> %LogDir%BackupLog-%datetime%.log
 rmdir /S /Q %TempDir%ServerBackup_%datetime% >> %LogDir%BackupLog-%datetime%.log

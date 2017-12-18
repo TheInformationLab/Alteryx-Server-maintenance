@@ -14,8 +14,9 @@
 SET LogDir="D:\ProgramData\Alteryx\Backup_logs\"
 SET TempDir="D:\Temp\Backup_logs\"
 SET Workspace="D:\ProgramData\Alteryx\"
-SET MongoBin="D:\MongoDB\Server\3.4\bin\"
-SET BackupDir="Z:\Backup\Logs"
+SET MongoBin="D:\MongoDB\Server\3.0\bin\"
+SET BackupLogs="D:\ProgramData\Alteryx\Backup_logs\"
+SET BackupDir="Z:\Backup\Logs\"
 
 ::-----------------------------------------------------------------------------
 :: Set Date/Time to the format DD-MM-YYYY and create log
@@ -41,6 +42,9 @@ robocopy %Workspace%Engine\logs %TempDir%Engine /mov /s  >> %LogDir%BackupLog-%d
 echo %date% %time%: Copying Error Logs >> %LogDir%BackupLog-%datetime%.log
 robocopy %Workspace%ErrorLogs %TempDir%ErrorLogs /mov /s  >> %LogDir%BackupLog-%datetime%.log
 
+echo %date% %time%: Copying Backup Logs older than 7 days >> %LogDir%BackupLog-%datetime%.log
+robocopy %BackupLogs% %BackupLogs%BackupLogs /move /minlad:7 /s /e >> %LogDir%BackupLog-%datetime%.log
+
 ::-----------------------------------------------------------------------------
 :: This section compresses the backup to a single zip archive
 ::
@@ -63,7 +67,7 @@ echo. >> %LogDir%BackupLog-%datetime%.log
 
 :: Be sure to update the UNC path for the network location to copy the file to.
 
-robocopy %TempDir%ServerLogs_%datetime%.7z %BackupDir%\ServerLogs_%datetime%.7z /mov /s>> %LogDir%BackupLog-%datetime%.log
+robocopy %TempDir% %BackupDir% /mov /s >> %LogDir%BackupLog-%datetime%.log
 rmdir /S /Q %TempDir%ServerBackup_%datetime% >> %LogDir%BackupLog-%datetime%.log
 
 ::-----------------------------------------------------------------------------
