@@ -48,7 +48,3 @@ mkdir $backup_path
 
 # Move archive to zip file
 7z a $backup_file $backup_path -r -sdel
-
-#Sync backup folder to S3 bucket
-aws s3 sync $backup_root s3://lner-alteryx/backups
-exit
