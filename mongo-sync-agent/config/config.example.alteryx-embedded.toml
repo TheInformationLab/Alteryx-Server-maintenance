@@ -1,0 +1,96 @@
+# mongo-sync-agent configuration
+#
+# Profile: embedded Alteryx Server MongoDB (Controller's built-in mongod)
+# ------------------------------------------------------------------------
+# Use this profile when you have NOT configured Alteryx Server to use an
+# external MongoDB, i.e. the Controller is running the MongoDB instance that
+# ships with the Alteryx Service, normally bound to localhost:27018.
+#
+# Only the [mongo] section differs from the standalone-mongod profile; every
+# other section below is identical between the two example files.
+
+[agent]
+# Local SQLite state DB tracking watermarks / file offsets / run history.
+state_db = "C:/ProgramData/mongo-sync-agent/state.db"
+# Scratch directory where Parquet files are staged before upload to S3.
+spool_dir = "C:/ProgramData/mongo-sync-agent/spool"
+# Directory for this agent's own log output.
+log_dir = "C:/ProgramData/mongo-sync-agent/logs"
+
+[mongo]
+enabled = true
+database = "AlteryxService"
+
+# --------------------------------------------------------------------------
+# HOW TO GET THE PASSWORD FOR THE EMBEDDED MONGODB
+# --------------------------------------------------------------------------
+# The embedded mongod is secured with a controller-generated account. There
+# are two ways to obtain the password, on the Controller machine:
+#
+#   1. (Supported / preferred) Run, from an elevated command prompt in the
+#      Alteryx Service install directory:
+#          AlteryxService.exe getemongopassword
+#      This prints the plaintext password the agent should use below.
+#
+#   2. (Manual fallback) The same value is stored, base64-encoded and
+#      AES-encrypted, in RuntimeSettings.xml under:
+#          Controller > Persistence > Password
+#      Decrypting this by hand is not documented/supported — use option 1
+#      (the AlteryxService command) instead of trying to reverse it yourself.
+#
+# The username is normally "controller"; confirm against your
+# RuntimeSettings.xml (Controller > Persistence > Username) if unsure.
+#
+# IMPORTANT: Polling the embedded MongoDB is a read-only operation and is
+# low-risk, but it is NOT part of Alteryx's formally supported configuration.
+# Notify your Alteryx account team if operating in a production environment.
+# --------------------------------------------------------------------------
+uri = "mongodb://controller:CHANGE_ME@localhost:27018/AlteryxService?authSource=admin"
+
+server_selection_timeout_ms = 5000
+
+# One [[mongo.collections]] block per collection to sync.
+#
+# mode:
+#   append_only  - rows are only ever inserted (e.g. queue/history logs);
+#                  the agent tracks progress by _id / insertion order.
+#   mutable      - rows can be updated after insert; requires
+#                  `watermark_field` (a field that changes on every update,
+#                  e.g. "dtModified") so the agent can re-pull changed rows.
+#   full_refresh - the whole collection is re-read and re-uploaded each run;
+#                  use for small reference/config collections only.
+[[mongo.collections]]
+name = "AS_Queue"
+mode = "append_only"
+overlap_seconds = 30
+batch_size = 1000
+
+[[mongo.collections]]
+name = "AS_Jobs"
+mode = "mutable"
+watermark_field = "dtModified"
+overlap_seconds = 60
+batch_size = 1000
+
+[s3]
+bucket = "my-alteryx-mongo-sync-bucket"
+region = "eu-west-2"
+prefix = ""
+
+[logs]
+enabled = true
+gc_days = 14
+
+[[logs.sources]]
+name = "gallery"
+path_glob = "C:/ProgramData/Alteryx/Gallery/Logs/alteryx-*.csv"
+encoding = "utf-16-le"
+
+[[logs.sources]]
+name = "service"
+path_glob = "C:/ProgramData/Alteryx/Service/AlteryxServiceLog_*.log"
+encoding = "utf-8"
+
+[hostmetrics]
+enabled = true
+disks = ["C:", "D:"]
