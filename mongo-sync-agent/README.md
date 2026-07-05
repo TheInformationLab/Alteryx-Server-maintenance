@@ -446,6 +446,32 @@ to discovering them by surprise:
   outside Alteryx's formally supported configuration** (see §5b). Treat it
   accordingly, and flag it to your Alteryx account team if you rely on it in
   production.
+- **Host metrics are point-in-time samples, not a continuous PerfMon-style
+  feed.** The agent is a one-shot process launched by the Scheduled Task on its
+  interval (§7); each run captures a single sample, so `RAW_HOSTMETRICS` has one
+  row per metric per tick (every 30–60 min), *not* a per-second series. Two
+  further points to understand before querying the disk numbers:
+  - **`disk_io` is a cumulative counter, not an interval delta.** psutil's
+    `read_bytes`/`write_bytes`/`read_count`/`write_count` are running totals
+    **since the last OS boot** (equivalent to PerfMon's raw
+    `\PhysicalDisk\Disk Bytes` counter *before* rate conversion), not the I/O
+    that occurred during the last interval. To get throughput, difference
+    consecutive samples per `host`+`path` in Snowflake, e.g.
+    `read_bytes - LAG(read_bytes) OVER (PARTITION BY host, path ORDER BY ts)`
+    divided by the actual `ts` gap. **Discard negative deltas** — the counter
+    resets to zero on reboot — and divide by the real time gap rather than an
+    assumed interval, so a missed run doesn't distort the rate. By contrast
+    `cpu_percent_1s` (a rate over a 1-second window) and the `memory`/
+    `disk_usage` gauges are meaningful on their own row and need no
+    differencing.
+  - **On Windows, `disk_io` is attributed by mapping the configured drive
+    letter to its backing physical drive(s).** psutil keys its per-disk I/O
+    counters by physical drive (`PhysicalDrive0`, …), not by drive letter, so
+    the agent resolves each configured letter to its physical disk(s) via the
+    `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` Win32 control code and sums their
+    counters (a volume can span more than one physical disk). If that mapping
+    can't be resolved, the record is still emitted with zeroed counters and a
+    `warning` key rather than being dropped.
 
 ## 12. Running the test suite
 
@@ -478,3 +504,23 @@ distinguished only by the tag shape:
 
 The full branching strategy, versioning scheme, and step-by-step process for
 cutting a beta or a release is documented in **[`RELEASING.md`](RELEASING.md)**.
+
+## 14. Roadmap / future work
+
+- **Higher-resolution host metrics via a PerfMon collector.** The current host
+  metrics are coarse point-in-time samples taken once per scheduled run (§7,
+  §11) — fine for trend/capacity reporting, but they leave gaps between ticks
+  and give no visibility into short-lived spikes (e.g. a disk saturating for two
+  minutes between 30-minute samples). A future enhancement would add a
+  continuous, higher-frequency collector — most naturally a Windows Performance
+  Monitor (PerfMon) **Data Collector Set** logging counters such as
+  `\PhysicalDisk(*)\Disk Bytes/sec`, `\Processor(_Total)\% Processor Time`, and
+  `\Memory\Available Bytes` at a per-minute (or finer) cadence — with the agent
+  tailing/rolling up those PerfMon logs and shipping them to S3 alongside the
+  existing samples. This would fill the gaps between the coarse samples and
+  provide already-rate-converted values, removing the need for the
+  counter-differencing described in §11. Design points to settle when this is
+  picked up: whether to drive PerfMon via a bundled `.xml` collector template
+  (`logman`) or read counters directly (e.g. via `typeperf`/PDH), the retention
+  and rollup strategy for the finer-grained data, and how it coexists with (or
+  supersedes) the current psutil `disk_io`/`cpu`/`memory` records in Snowflake.
