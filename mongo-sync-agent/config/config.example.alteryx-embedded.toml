@@ -15,7 +15,12 @@ state_db = "C:/ProgramData/mongo-sync-agent/state.db"
 # Scratch directory where Parquet files are staged before upload to S3.
 spool_dir = "C:/ProgramData/mongo-sync-agent/spool"
 # Directory for this agent's own log output.
-log_dir = "C:/ProgramData/mongo-sync-agent/logs"
+# Default when omitted: %APPDATA%/mongo-sync-agent/logs  (e.g. C:/Users/<you>/AppData/Roaming/mongo-sync-agent/logs)
+# log_dir = "C:/ProgramData/mongo-sync-agent/logs"
+# Minimum log level written to the console / Windows Scheduled Task output stream.
+# The file sink (msa.log) always captures DEBUG regardless of this setting.
+# Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL  (default: WARNING)
+log_level = "WARNING"
 
 [mongo]
 enabled = true

@@ -8,11 +8,12 @@ state store's run-history bookkeeping, then returns a process exit code.
 
 from __future__ import annotations
 
-import logging
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+
+from loguru import logger
 
 from .config import AgentConfig
 from .locking import AlreadyRunningError, SingleInstanceLock
@@ -21,8 +22,6 @@ from .runner_types import RunContext, RunSummary, UnitResult
 from .s3 import S3Uploader
 from .spool import setup_spool, sweep_orphans
 from .state import StateStore
-
-logger = logging.getLogger(__name__)
 
 
 def run_cycle(
@@ -41,14 +40,16 @@ def run_cycle(
     """
     # 1. Configure logging as early as possible so setup failures are captured too.
     run_id = str(uuid.uuid4())[:8]
-    configure_logging(cfg.log_dir, run_id)
+    configure_logging(cfg.log_dir, run_id, cfg.log_level)
+    logger.info("Run starting: run_id={} log_dir={} log_level={}", run_id, cfg.log_dir, cfg.log_level)
 
     # 2. Acquire the single-instance lock; refuse to run concurrently with another instance.
     lock = SingleInstanceLock(Path(cfg.spool_dir) / ".lock")
     try:
         lock.acquire()
+        logger.debug("Single-instance lock acquired")
     except AlreadyRunningError as e:
-        logger.error("Agent already running (PID %d)", e.pid)
+        logger.error("Agent already running (PID {}); aborting", e.pid)
         return 2
 
     run_dt = datetime.now(timezone.utc)
@@ -58,9 +59,13 @@ def run_cycle(
     try:
         # 3. Set up durable state and the per-run spool directory; sweep any
         #    leftover spool directories from crashed prior runs.
+        logger.debug("Opening state store: {}", cfg.state_db)
         state = StateStore(Path(cfg.state_db))
         spool_dir = setup_spool(cfg.spool_dir, run_id)
-        sweep_orphans(cfg.spool_dir, run_id)
+        orphans_swept = sweep_orphans(cfg.spool_dir, run_id)
+        if orphans_swept:
+            logger.warning("Swept {} orphaned spool director{} from prior crashed run(s)",
+                           orphans_swept, "y" if orphans_swept == 1 else "ies")
 
         run_ctx = RunContext(run_id=run_id, run_dt=run_dt, spool_dir=spool_dir, dry_run=dry_run)
         uploader = S3Uploader(cfg.s3.bucket, cfg.s3.prefix, cfg.s3.region)
@@ -75,16 +80,25 @@ def run_cycle(
             colls = cfg.collections
             if collection:
                 colls = [c for c in colls if c.name == collection]
+                logger.debug("Filtering to single collection: {}", collection)
+            logger.info("Mongo module: extracting {} collection(s)", len(colls))
             results.extend(extract_all(cfg.mongo, colls, state, uploader, run_ctx))
             peak.sample()
+            logger.debug("Mongo module complete; peak_rss_mb={:.1f}", peak.peak / 1_048_576)
+        elif only is None or "mongo" in only:
+            logger.debug("Mongo module skipped (disabled in config)")
 
         # 5. Logs module.
         if (only is None or "logs" in only) and cfg.logs.enabled:
             from .logs.ship import ship_all
 
             peak.sample()
+            logger.info("Logs module: shipping {} source(s)", len(cfg.logs.sources))
             results.extend(ship_all(cfg.logs, state, uploader, run_ctx))
             peak.sample()
+            logger.debug("Logs module complete; peak_rss_mb={:.1f}", peak.peak / 1_048_576)
+        elif only is None or "logs" in only:
+            logger.debug("Logs module skipped (disabled in config)")
 
         # 6. Host metrics module.
         if (only is None or "hostmetrics" in only) and cfg.hostmetrics.enabled:
@@ -95,7 +109,9 @@ def run_cycle(
 
             peak.sample()
             records = collect(cfg.hostmetrics.disks)
+            logger.info("Host metrics module: collecting")
             if records:
+                logger.debug("Collected {} host metric record(s)", len(records))
                 sp = spool_path(spool_dir, "hostmetrics", "jsonl.gz")
                 sink = GzipNdjsonSink(sp)
                 try:
@@ -114,7 +130,7 @@ def run_cycle(
                         upload_result = uploader.upload(sp, key)  # step 2: upload to S3
                     except Exception as e:
                         sink.abort()
-                        logger.error("S3 upload failed for hostmetrics: %s", e)
+                        logger.error("S3 upload failed for hostmetrics: {}", e)
                         results.append(UnitResult("hostmetrics", "failed", error=str(e)))
                     else:
                         sp.unlink(missing_ok=True)  # step 3: clean up spool (no state to commit)
@@ -127,8 +143,10 @@ def run_cycle(
                             )
                         )
             else:
+                logger.warning("Host metrics: no records collected")
                 results.append(UnitResult("hostmetrics", "empty"))
             peak.sample()
+            logger.debug("Host metrics module complete; peak_rss_mb={:.1f}", peak.peak / 1_048_576)
 
         # 7. Build the run summary, persist it, and log a structured completion record.
         duration = time.monotonic() - t0
@@ -142,21 +160,25 @@ def run_cycle(
         state.record_run(summary)
         state.close()
 
-        logger.info(
-            "Run complete",
-            extra={
-                "run_summary": {
-                    "exit_code": summary.exit_code,
-                    "duration_s": summary.duration_s,
-                    "peak_rss_mb": round(summary.peak_rss_bytes / 1_048_576, 1),
-                    "units": [{"unit": u.unit, "status": u.status, "docs": u.docs} for u in results],
-                }
-            },
+        unit_lines = ", ".join(
+            f"{u.unit}={u.status}({u.docs}docs)" for u in results
         )
+        logger.info(
+            "Run complete: exit_code={} duration_s={} peak_rss_mb={:.1f} units=[{}]",
+            summary.exit_code,
+            summary.duration_s,
+            round(summary.peak_rss_bytes / 1_048_576, 1),
+            unit_lines,
+        )
+        if summary.exit_code == 1:
+            failed = [u for u in results if u.status == "failed"]
+            for u in failed:
+                logger.warning("Unit {} failed: {}", u.unit, u.error)
         return summary.exit_code
 
     except Exception:
-        logger.exception("Fatal error in run cycle")
+        logger.exception("Fatal unhandled error in run cycle")
         return 2
     finally:
         lock.release()
+        logger.debug("Single-instance lock released")

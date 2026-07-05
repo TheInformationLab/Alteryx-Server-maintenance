@@ -16,7 +16,6 @@ the persisted offsets:
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -116,7 +115,7 @@ def test_rename_rotation_carries_offset(tmp_path: Path, tmp_state: StateStore):
     assert [p.path.name for p in plans2] == [archive.name, live.name]
 
 
-def test_truncation_resets_offset(tmp_path: Path, tmp_state: StateStore, caplog):
+def test_truncation_resets_offset(tmp_path: Path, tmp_state: StateStore):
     # 1. Create a file large enough to fingerprint, and fingerprint it. It is
     #    deliberately larger than FP_PREFIX so that a later truncation which
     #    keeps the first FP_PREFIX bytes leaves the fingerprint stable (the file
@@ -139,13 +138,18 @@ def test_truncation_resets_offset(tmp_path: Path, tmp_state: StateStore, caplog)
     assert path.stat().st_size < saved_offset
 
     # 3. Discover must detect the shrink, reset to 0, and warn.
-    source = _source(tmp_path)
-    with caplog.at_level(logging.WARNING, logger="mongo_sync_agent.logs.sources"):
-        plans = discover(source, tmp_state.get_offsets(SOURCE))
+    # Capture loguru WARNING records (conftest removes all sinks).
+    from loguru import logger as _loguru
+    captured: list[str] = []
+    sink_id = _loguru.add(lambda m: captured.append(m), level="WARNING")
+    try:
+        plans = discover(_source(tmp_path), tmp_state.get_offsets(SOURCE))
+    finally:
+        _loguru.remove(sink_id)
 
     assert len(plans) == 1
     assert plans[0].start_offset == 0
-    assert any("Truncation detected" in rec.message for rec in caplog.records)
+    assert any("Truncation detected" in m for m in captured)
 
 
 def test_new_file_starts_at_zero(tmp_path: Path, tmp_state: StateStore):

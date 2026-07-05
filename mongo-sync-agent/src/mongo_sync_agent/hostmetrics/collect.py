@@ -1,11 +1,9 @@
 """psutil-based host metrics collection."""
 
-import logging
 from datetime import datetime, timezone
 
 import psutil
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 def collect(disks: list[str]) -> list[dict]:
@@ -23,6 +21,7 @@ def collect(disks: list[str]) -> list[dict]:
       disk_io from psutil.disk_io_counters(perdisk=True) — match disk to partition;
       if not found, emit a record with all zeros and a "warning" key.
     """
+    logger.debug("Collecting host metrics (disks={})", disks)
     records = []
 
     # CPU metrics
@@ -33,8 +32,9 @@ def collect(disks: list[str]) -> list[dict]:
             "value": cpu_percent,
             "ts": datetime.now(timezone.utc).isoformat()
         })
+        logger.debug("CPU: {}%", cpu_percent)
     except Exception as e:
-        logger.warning(f"Failed to collect CPU metrics: {e}")
+        logger.warning("Failed to collect CPU metrics: {}", e)
 
     # Memory metrics
     try:
@@ -47,26 +47,25 @@ def collect(disks: list[str]) -> list[dict]:
             "percent": mem.percent,
             "ts": datetime.now(timezone.utc).isoformat()
         })
+        logger.debug("Memory: {}% used ({} MB avail)", mem.percent, mem.available // 1_048_576)
     except Exception as e:
-        logger.warning(f"Failed to collect memory metrics: {e}")
+        logger.warning("Failed to collect memory metrics: {}", e)
 
     # Get disk IO counters once (for all disks)
     disk_io_counters = {}
     try:
         disk_io_counters = psutil.disk_io_counters(perdisk=True) or {}
     except Exception as e:
-        logger.warning(f"Failed to collect disk IO counters: {e}")
+        logger.warning("Failed to collect disk IO counters: {}", e)
 
     # Disk metrics
     for disk in disks:
-        # Verify disk exists and get usage
         try:
             usage = psutil.disk_usage(disk)
         except Exception as e:
-            logger.warning(f"Disk {disk} not found or inaccessible: {e}")
+            logger.warning("Disk {} not found or inaccessible: {}", disk, e)
             continue
 
-        # Disk usage record
         records.append({
             "metric": "disk_usage",
             "path": disk,
@@ -76,8 +75,8 @@ def collect(disks: list[str]) -> list[dict]:
             "percent": usage.percent,
             "ts": datetime.now(timezone.utc).isoformat()
         })
+        logger.debug("Disk {}: {}% used", disk, usage.percent)
 
-        # Disk IO record
         try:
             io_data = disk_io_counters.get(disk)
             if io_data:
@@ -91,7 +90,7 @@ def collect(disks: list[str]) -> list[dict]:
                     "ts": datetime.now(timezone.utc).isoformat()
                 })
             else:
-                # Not found — emit with zeros and warning
+                logger.warning("Disk IO data not found for {}; emitting zeros", disk)
                 records.append({
                     "metric": "disk_io",
                     "path": disk,
@@ -103,6 +102,7 @@ def collect(disks: list[str]) -> list[dict]:
                     "ts": datetime.now(timezone.utc).isoformat()
                 })
         except Exception as e:
-            logger.warning(f"Failed to collect disk IO for {disk}: {e}")
+            logger.warning("Failed to collect disk IO for {}: {}", disk, e)
 
+    logger.debug("Host metrics collected: {} record(s)", len(records))
     return records

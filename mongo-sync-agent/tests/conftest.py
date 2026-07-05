@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+from loguru import logger
+
+# Suppress all loguru output during tests — individual tests that want to inspect
+# log records should install their own sink via logger.add().
+logger.remove()
 
 # src-layout package; make it importable without requiring an editable install.
 _SRC = Path(__file__).resolve().parent.parent / "src"

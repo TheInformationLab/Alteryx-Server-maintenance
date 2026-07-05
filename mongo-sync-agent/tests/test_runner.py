@@ -53,6 +53,7 @@ def _make_cfg(
         state_db=str(tmp_path / "state.db"),
         spool_dir=str(spool_dir),
         log_dir=str(tmp_path / "logs"),
+        log_level="WARNING",
         mongo_enabled=mongo_enabled,
         mongo=MongoConfig(database="testdb") if mongo_enabled else None,
         collections=[CollectionConfig(name="widgets", mode="append_only")],

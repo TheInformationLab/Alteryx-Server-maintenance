@@ -17,9 +17,10 @@ by the Mongo extractor (see ``mongo/extract.py``); downstream dedup on
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
+
+from loguru import logger
 
 from ..config import LogsConfig, LogSourceConfig
 from ..runner_types import RunContext, UnitResult
@@ -29,8 +30,6 @@ from ..spool import spool_path
 from ..state import FileOffset, StateStore
 from .sources import TailPlan, discover, gc_offsets
 from .tailer import drain_file
-
-logger = logging.getLogger(__name__)
 
 _DEFAULT_GC_DAYS = 14  # falls back to LogsConfig's default if the caller doesn't pass one
 
@@ -62,8 +61,10 @@ def ship_source(
     through explicitly; callers that invoke ``ship_source`` directly get the
     same default (14 days) that ``LogsConfig`` uses.
     """
+    logger.info("Shipping log source: {} (glob={})", source_cfg.name, source_cfg.path_glob)
     state_offsets = state.get_offsets(source_cfg.name)
     plans = discover(source_cfg, state_offsets)
+    logger.debug("Source '{}': {} file(s) in tail plan", source_cfg.name, len(plans))
 
     records: list[dict] = []
     # Per-file bookkeeping, keyed by the same key used in state (fingerprint,
@@ -76,6 +77,7 @@ def ship_source(
         current_keys.add(key)
 
         chunks = drain_file(plan.path, plan.start_offset, source_cfg.encoding, source_cfg.max_bytes_per_poll)
+        logger.debug("Source '{}': file {} yielded {} chunk(s)", source_cfg.name, plan.path.name, len(chunks))
 
         offset = plan.start_offset
         for chunk in chunks:
@@ -95,6 +97,7 @@ def ship_source(
         new_offsets[key] = (plan, offset)
 
     if not records:
+        logger.info("Source '{}': no new lines this poll", source_cfg.name)
         return UnitResult(unit=source_cfg.name, status="empty")
 
     spool_file = spool_path(run_ctx.spool_dir, source_cfg.name, "jsonl.gz")
@@ -107,9 +110,11 @@ def ship_source(
 
     result = sink.close()  # step 1: finalise the gzip file on disk
 
+    logger.debug("Source '{}': {} line(s) collected", source_cfg.name, len(records))
+
     if run_ctx.dry_run:
         sink.path.unlink(missing_ok=True)
-        logger.info("dry_run: would upload %s (%d lines)", source_cfg.name, result.rows)
+        logger.info("dry_run: would upload {} ({} lines)", source_cfg.name, result.rows)
         return UnitResult(unit=source_cfg.name, status="ok", docs=result.rows, bytes_uploaded=0)
 
     try:
@@ -117,7 +122,7 @@ def ship_source(
         upload_result = uploader.upload(spool_file, key)  # step 2: upload to S3
     except UploadError as e:
         sink.abort()
-        logger.error("S3 upload failed for log source %s: %s", source_cfg.name, e)
+        logger.error("S3 upload failed for log source {}: {}", source_cfg.name, e)
         return UnitResult(unit=source_cfg.name, status="failed", docs=result.rows, error=str(e))
 
     # ONLY advance offsets after confirmed upload, all in one transaction:
@@ -136,13 +141,18 @@ def ship_source(
                 updated_at="",  # overwritten by StateStore.set_offsets
             )
         )
+    logger.debug("Source '{}': committing {} file offset(s)", source_cfg.name, len(offsets_to_commit))
     state.set_offsets(source_cfg.name, offsets_to_commit, run_ctx.run_id)  # step 3: commit state
 
-    # current_keys was captured during discovery: the set of fingerprint (or
-    # provisional "path:") keys still present on disk this run.
-    gc_offsets(state, source_cfg.name, current_keys, gc_days)
+    gc_count = gc_offsets(state, source_cfg.name, current_keys, gc_days)
+    if gc_count:
+        logger.debug("Source '{}': GC'd {} stale offset record(s)", source_cfg.name, gc_count)
 
     spool_file.unlink(missing_ok=True)  # step 4: clean up spool (safe -- state already committed)
+    logger.info(
+        "Source '{}' done: lines={} bytes_uploaded={}",
+        source_cfg.name, result.rows, upload_result.bytes_uploaded,
+    )
     return UnitResult(
         unit=source_cfg.name,
         status="ok",

@@ -27,11 +27,10 @@ Two on-disk encodings are handled:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 DEFAULT_MAX_BYTES = 8_388_608  # 8 MB -- bounds per-poll memory usage.
 

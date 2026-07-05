@@ -6,15 +6,13 @@ instance profiles, or named profiles. No credentials are hardcoded.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from pathlib import Path
 from typing import NamedTuple
 
 import boto3
 import botocore.exceptions
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 
 class UploadError(Exception):
@@ -71,20 +69,22 @@ class S3Uploader:
         """
         local_path = Path(local_path)
 
+        bytes_to_upload = local_path.stat().st_size
+        logger.debug(
+            "S3 upload starting: {} → s3://{}/{} ({} bytes)",
+            local_path, self._bucket, key, bytes_to_upload,
+        )
         try:
-            # Use TransferManager via upload_file for multipart handling
             self._s3.upload_file(str(local_path), self._bucket, key)
-            logger.debug(
-                f"Uploaded {local_path} to s3://{self._bucket}/{key}"
-            )
 
-            # Fetch ETag for result
             response = self._s3.head_object(Bucket=self._bucket, Key=key)
             etag = response["ETag"].strip('"')
-
-            # Get file size
             bytes_uploaded = local_path.stat().st_size
 
+            logger.info(
+                "S3 upload complete: s3://{}/{} etag={} bytes={}",
+                self._bucket, key, etag, bytes_uploaded,
+            )
             return UploadResult(key=key, bytes_uploaded=bytes_uploaded, etag=etag)
 
         except (botocore.exceptions.ClientError, botocore.exceptions.BotoCoreError) as e:

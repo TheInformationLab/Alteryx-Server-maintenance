@@ -23,9 +23,8 @@ CRASH SAFETY (write → upload → commit ordering):
 
 from __future__ import annotations
 
-import logging
-
 from pymongo.collection import Collection
+from loguru import logger
 
 from ..config import CollectionConfig, MongoConfig
 from ..landing import RowContext, VariantJsonLanding
@@ -35,8 +34,6 @@ from ..sinks import ParquetVariantSink
 from ..spool import spool_path
 from ..state import StateStore
 from .watermark import make_strategy, validate_watermark_kind
-
-logger = logging.getLogger(__name__)
 
 
 def extract_collection(
@@ -55,13 +52,18 @@ def extract_collection(
     """
     namespace = f"mongo:{db_name}.{cfg.name}"
     strategy = make_strategy(cfg)
+    logger.info("Extracting collection: {} (mode={})", namespace, cfg.mode)
 
     prev = state.get_watermark(namespace)
     if prev is not None:
+        logger.debug("Existing watermark: kind={} value={}", prev.kind, prev.value)
         validate_watermark_kind(prev, strategy)  # raises ConfigError on mismatch
+    else:
+        logger.debug("No existing watermark for {}; first run or full_refresh", namespace)
 
     filter_doc = strategy.build_filter(prev.value if prev else None)
     sort = strategy.sort_spec()
+    logger.debug("Query filter={} sort={}", filter_doc, sort)
 
     cursor = coll.find(
         filter_doc,
@@ -77,6 +79,7 @@ def extract_collection(
 
     # The Mongo cursor is closed explicitly in finally: on any error (or an early
     # empty/return path) we must not leak the server-side cursor.
+    batch_count = 0
     try:
         rows: list[dict] = []
         for doc in cursor:
@@ -84,43 +87,55 @@ def extract_collection(
             rows.append(landing.doc_to_row(doc, ctx))
             if len(rows) >= cfg.batch_size:
                 sink.write_rows(rows)
+                batch_count += 1
+                logger.debug("Flushed batch {} ({} rows)", batch_count, len(rows))
                 rows = []  # CRITICAL: clear immediately — this is the memory invariant
 
         if rows:  # flush remaining partial batch
             sink.write_rows(rows)
+            batch_count += 1
+            logger.debug("Flushed final batch {} ({} rows)", batch_count, len(rows))
     except Exception:
-        # Any failure while streaming: discard the partial spool file and propagate.
         sink.abort()
         raise
     finally:
         cursor.close()
 
     if sink.rows == 0:
+        logger.info("Collection {}: no new documents (watermark unchanged)", cfg.name)
         sink.abort()
         return UnitResult(unit=cfg.name, status="empty")
 
     # CRASH SAFETY ORDERING — do NOT change the ordering of these steps:
     result = sink.close()  # step 1: finalise parquet footer on disk
+    logger.debug("Spool finalised: {} rows in {} batch(es)", result.rows, batch_count)
 
     if run_ctx.dry_run:
         sink.path.unlink(missing_ok=True)
-        logger.info("dry_run: would upload %s (%d rows)", cfg.name, result.rows)
+        logger.info("dry_run: would upload {} ({} rows)", cfg.name, result.rows)
         return UnitResult(unit=cfg.name, status="ok", docs=result.rows, bytes_uploaded=0)
 
     try:
         key = mongo_key(uploader._prefix, db_name, cfg.name, run_ctx.run_dt)
         upload_result = uploader.upload(spool_file, key)  # step 2: upload to S3 (raises UploadError)
     except UploadError as e:
-        sink.abort()  # clean up spool on upload failure
-        logger.error("S3 upload failed for %s: %s", cfg.name, e)
+        sink.abort()
+        logger.error("S3 upload failed for {}: {}", cfg.name, e)
         return UnitResult(unit=cfg.name, status="failed", docs=result.rows, error=str(e))
 
     # ONLY advance watermark after confirmed upload:
     new_wm = strategy.new_watermark()
     if new_wm is not None:
+        logger.info("Advancing watermark for {}: {}", namespace, new_wm)
         state.set_watermark(namespace, strategy.kind, new_wm, run_ctx.run_id)  # step 3: commit state
+    else:
+        logger.debug("No watermark to advance for {} (full_refresh or no docs)", cfg.name)
 
     spool_file.unlink(missing_ok=True)  # step 4: clean up spool (safe — state already committed)
+    logger.info(
+        "Collection {} done: docs={} bytes_uploaded={}",
+        cfg.name, result.rows, upload_result.bytes_uploaded,
+    )
     return UnitResult(
         unit=cfg.name,
         status="ok",
@@ -145,12 +160,15 @@ def extract_all(
     try:
         client = make_client(mongo_cfg)
         if not ping(client):
+            logger.error("MongoDB ping failed for database '{}'", mongo_cfg.database)
             return [
                 UnitResult(unit=cfg.name, status="failed", error="MongoDB ping failed")
                 for cfg in collections
             ]
         db = client[mongo_cfg.database]
+        logger.debug("Connected to MongoDB database: {}", mongo_cfg.database)
     except Exception as e:
+        logger.error("MongoDB connection error: {}", e)
         return [
             UnitResult(unit=cfg.name, status="failed", error=f"MongoDB connect error: {e}")
             for cfg in collections
@@ -161,6 +179,10 @@ def extract_all(
         for cfg in collections:
             # Validate: refuse .chunks collections unless allow_gridfs_chunks
             if cfg.name.endswith(".chunks") and not cfg.allow_gridfs_chunks:
+                logger.warning(
+                    "Skipping GridFS chunks collection '{}' (set allow_gridfs_chunks=true to enable)",
+                    cfg.name,
+                )
                 results.append(
                     UnitResult(
                         unit=cfg.name,
@@ -175,9 +197,10 @@ def extract_all(
                 )
                 results.append(result)
             except Exception as e:
-                logger.exception("Unexpected error extracting %s", cfg.name)
+                logger.exception("Unexpected error extracting {}", cfg.name)
                 results.append(UnitResult(unit=cfg.name, status="failed", error=str(e)))
     finally:
         client.close()
+        logger.debug("MongoDB client closed")
 
     return results

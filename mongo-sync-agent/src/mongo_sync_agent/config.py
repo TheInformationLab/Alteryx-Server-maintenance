@@ -7,10 +7,17 @@ with a message naming the offending field.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+_DEFAULT_LOG_DIR = os.path.join(
+    os.environ.get("APPDATA", os.path.expanduser("~")),
+    "mongo-sync-agent",
+    "logs",
+)
 
 _VALID_MODES = ("append_only", "mutable", "full_refresh")
 
@@ -77,6 +84,7 @@ class AgentConfig:
     state_db: str
     spool_dir: str
     log_dir: str
+    log_level: str
     mongo_enabled: bool
     mongo: MongoConfig | None
     collections: list[CollectionConfig]
@@ -267,7 +275,8 @@ def load_config(path: Path) -> AgentConfig:
 
     state_db = _require(agent_raw, "state_db", "agent.state_db", str)
     spool_dir = _require(agent_raw, "spool_dir", "agent.spool_dir", str)
-    log_dir = _require(agent_raw, "log_dir", "agent.log_dir", str)
+    log_dir = _optional(agent_raw, "log_dir", "agent.log_dir", str, _DEFAULT_LOG_DIR)
+    log_level = _optional(agent_raw, "log_level", "agent.log_level", str, "WARNING")
 
     mongo_enabled, mongo, collections = _parse_mongo(raw.get("mongo"))
     s3_cfg = _parse_s3(raw.get("s3"))
@@ -278,6 +287,7 @@ def load_config(path: Path) -> AgentConfig:
         state_db=state_db,
         spool_dir=spool_dir,
         log_dir=log_dir,
+        log_level=log_level,
         mongo_enabled=mongo_enabled,
         mongo=mongo,
         collections=collections,

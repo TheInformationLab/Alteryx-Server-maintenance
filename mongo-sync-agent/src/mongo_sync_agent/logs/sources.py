@@ -30,16 +30,15 @@ from __future__ import annotations
 
 import glob as glob_module
 import hashlib
-import logging
 import stat as stat_module
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from loguru import logger
+
 from ..config import LogSourceConfig
 from ..state import FileOffset, StateStore
-
-logger = logging.getLogger(__name__)
 
 FP_PREFIX = 4096  # bytes used for fingerprint (sha256 of first min(4096, file_size) bytes)
 
@@ -140,13 +139,13 @@ def discover(
         try:
             st = path.stat()
         except OSError:
-            # Vanished between glob and stat (e.g. rotated away): skip this poll.
+            logger.debug("Source '{}': file vanished during stat, skipping: {}", source.name, path)
             continue
         if not stat_module.S_ISREG(st.st_mode):
             continue
         entries.append((st.st_mtime, str(path), path))
 
-    # Oldest first: archives (older mtime) before the live file (newest mtime).
+    logger.debug("Source '{}': glob matched {} file(s)", source.name, len(entries))
     entries.sort(key=lambda e: (e[0], e[1]))
 
     for mtime, _name, path in entries:
@@ -159,7 +158,7 @@ def discover(
         if fp is not None:
             existing = state_offsets.get(fp)
             if existing is not None:
-                # Known content, possibly under a new name after rotation.
+                logger.debug("Source '{}': known fingerprint {} → {}, offset={}", source.name, fp[:12], path.name, existing.offset)
                 start = existing.offset
                 try:
                     size = path.stat().st_size
@@ -179,10 +178,7 @@ def discover(
                     start = 0
                 plans.append(TailPlan(path=path, fingerprint=fp, start_offset=start))
             else:
-                # New content, or a provisional file that has now grown past
-                # FP_PREFIX. Either way it is a new fingerprint: start at 0.
-                # (Re-shipping at most the header row is acceptable; the stale
-                # provisional "path:" record, if any, is reaped by gc_offsets.)
+                logger.debug("Source '{}': new fingerprint {} → {}, starting from 0", source.name, fp[:12], path.name)
                 plans.append(TailPlan(path=path, fingerprint=fp, start_offset=0))
         else:
             # Too small to fingerprint yet: track provisionally by path.

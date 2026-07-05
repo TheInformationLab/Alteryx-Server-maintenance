@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pymongo
+from loguru import logger
 
 if TYPE_CHECKING:
     from ..config import MongoConfig
@@ -33,32 +34,34 @@ def make_client(cfg: MongoConfig) -> pymongo.MongoClient:
     timeout_ms = cfg.server_selection_timeout_ms
 
     if cfg.uri:
-        # URI overrides all other settings
-        return pymongo.MongoClient(
-            cfg.uri,
-            serverSelectionTimeoutMS=timeout_ms,
-        )
+        logger.debug("Creating MongoClient from URI (timeout_ms={})", timeout_ms)
+        client = pymongo.MongoClient(cfg.uri, serverSelectionTimeoutMS=timeout_ms)
+        logger.debug("MongoClient created (URI mode, db={})", cfg.database)
+        return client
 
-    # Build connection string from individual parameters
+    logger.debug(
+        "Creating MongoClient: host={} port={} tls={} auth={} timeout_ms={}",
+        cfg.host, cfg.port, cfg.tls, bool(cfg.username), timeout_ms,
+    )
     kwargs = {
         "host": cfg.host,
         "port": cfg.port,
         "serverSelectionTimeoutMS": timeout_ms,
     }
 
-    # Add authentication if provided
     if cfg.username:
         kwargs["username"] = cfg.username
         kwargs["password"] = cfg.password
         kwargs["authSource"] = cfg.auth_source
 
-    # Add TLS configuration if enabled
     if cfg.tls:
         kwargs["tls"] = True
         if cfg.tls_ca_file:
             kwargs["tlsCAFile"] = cfg.tls_ca_file
 
-    return pymongo.MongoClient(**kwargs)
+    client = pymongo.MongoClient(**kwargs)
+    logger.debug("MongoClient created (host mode, db={})", cfg.database)
+    return client
 
 
 def ping(client: pymongo.MongoClient) -> bool:
@@ -72,6 +75,8 @@ def ping(client: pymongo.MongoClient) -> bool:
     """
     try:
         client.admin.command("ping")
+        logger.debug("MongoDB ping OK")
         return True
-    except Exception:
+    except Exception as exc:
+        logger.warning("MongoDB ping failed: {}", exc)
         return False

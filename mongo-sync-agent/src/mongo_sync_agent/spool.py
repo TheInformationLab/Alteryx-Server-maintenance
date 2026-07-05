@@ -1,11 +1,14 @@
-from pathlib import Path
 import shutil
+from pathlib import Path
+
+from loguru import logger
 
 
 def setup_spool(spool_base: str, run_id: str) -> Path:
     """Create {spool_base}/{run_id}/ and return it as a Path."""
     spool_dir = Path(spool_base) / run_id
     spool_dir.mkdir(parents=True, exist_ok=True)
+    logger.debug("Spool directory created: {}", spool_dir)
     return spool_dir
 
 
@@ -20,8 +23,11 @@ def sweep_orphans(spool_base: str, current_run_id: str) -> int:
     count = 0
     for item in spool_base_path.iterdir():
         if item.is_dir() and item.name != current_run_id:
+            logger.warning("Sweeping orphaned spool directory: {}", item)
             shutil.rmtree(item, ignore_errors=True)
             count += 1
+    if count:
+        logger.info("Swept {} orphaned spool director{}", count, "y" if count == 1 else "ies")
     return count
 
 
