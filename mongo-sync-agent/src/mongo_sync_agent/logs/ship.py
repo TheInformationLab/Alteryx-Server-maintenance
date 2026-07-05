@@ -86,6 +86,7 @@ def ship_source(
                 records.append(
                     {
                         "line": line,
+                        "host": run_ctx.host,
                         "source": source_cfg.name,
                         "file": plan.path.name,
                         "file_offset": chunk.new_offset,

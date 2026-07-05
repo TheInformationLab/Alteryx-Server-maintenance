@@ -28,6 +28,11 @@ class RowContext(NamedTuple):
     """Per-row context supplied by the extract loop, independent of the doc itself."""
 
     extracted_at: datetime
+    # Logical identifier of the host that performed this extraction (from
+    # AgentConfig.host_id, else the machine name). In an active/passive
+    # multi-controller deployment this records which node was active when the
+    # row was extracted; see the multi-controller notes in the README.
+    host: str = ""
 
 
 class LandingFormat(Protocol):
@@ -64,6 +69,7 @@ class VariantJsonLanding:
             pa.field(
                 "_extracted_at", pa.timestamp("us", tz="UTC")
             ),  # extraction timestamp
+            pa.field("_host", pa.string()),  # host that performed the extraction
         ]
     )
 
@@ -88,6 +94,7 @@ class VariantJsonLanding:
             "_id": doc_id,
             "_watermark": self._strategy.watermark_column_value(doc),
             "_extracted_at": ctx.extracted_at,
+            "_host": ctx.host,
         }
 
 

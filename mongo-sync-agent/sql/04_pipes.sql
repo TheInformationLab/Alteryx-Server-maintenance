@@ -33,7 +33,7 @@
 CREATE PIPE IF NOT EXISTS PIPE_MONGO_AS_QUEUE
     AUTO_INGEST = TRUE
 AS
-COPY INTO RAW_MONGO_AS_QUEUE (payload, _id, _watermark, _extracted_at)
+COPY INTO RAW_MONGO_AS_QUEUE (payload, _id, _watermark, _extracted_at, _host)
 FROM (
     SELECT
         -- payload is landed as a JSON *string* column inside the Parquet file
@@ -42,7 +42,8 @@ FROM (
         PARSE_JSON($1:payload::STRING),
         $1:_id::STRING,
         $1:_watermark::STRING,
-        $1:_extracted_at::TIMESTAMP_TZ
+        $1:_extracted_at::TIMESTAMP_TZ,
+        $1:_host::STRING
     FROM @<STAGE_NAME>/mongo/AlteryxService/AS_QUEUE/
 )
 FILE_FORMAT = (FORMAT_NAME = MSA_PARQUET)
@@ -51,13 +52,14 @@ MATCH_BY_COLUMN_NAME = NONE;
 CREATE PIPE IF NOT EXISTS PIPE_MONGO_AS_JOBS
     AUTO_INGEST = TRUE
 AS
-COPY INTO RAW_MONGO_AS_JOBS (payload, _id, _watermark, _extracted_at)
+COPY INTO RAW_MONGO_AS_JOBS (payload, _id, _watermark, _extracted_at, _host)
 FROM (
     SELECT
         PARSE_JSON($1:payload::STRING),
         $1:_id::STRING,
         $1:_watermark::STRING,
-        $1:_extracted_at::TIMESTAMP_TZ
+        $1:_extracted_at::TIMESTAMP_TZ,
+        $1:_host::STRING
     FROM @<STAGE_NAME>/mongo/AlteryxService/AS_JOBS/
 )
 FILE_FORMAT = (FORMAT_NAME = MSA_PARQUET)
@@ -68,13 +70,14 @@ MATCH_BY_COLUMN_NAME = NONE;
 -- CREATE PIPE IF NOT EXISTS PIPE_MONGO_<COLLECTION_NAME>
 --     AUTO_INGEST = TRUE
 -- AS
--- COPY INTO RAW_MONGO_<COLLECTION_NAME> (payload, _id, _watermark, _extracted_at)
+-- COPY INTO RAW_MONGO_<COLLECTION_NAME> (payload, _id, _watermark, _extracted_at, _host)
 -- FROM (
 --     SELECT
 --         PARSE_JSON($1:payload::STRING),
 --         $1:_id::STRING,
 --         $1:_watermark::STRING,
---         $1:_extracted_at::TIMESTAMP_TZ
+--         $1:_extracted_at::TIMESTAMP_TZ,
+--         $1:_host::STRING
 --     FROM @<STAGE_NAME>/mongo/AlteryxService/<COLLECTION_NAME>/
 -- )
 -- FILE_FORMAT = (FORMAT_NAME = MSA_PARQUET)
@@ -87,10 +90,11 @@ MATCH_BY_COLUMN_NAME = NONE;
 CREATE PIPE IF NOT EXISTS PIPE_LOGS_GALLERY
     AUTO_INGEST = TRUE
 AS
-COPY INTO RAW_LOGS (line, source, file, file_offset, shipped_at)
+COPY INTO RAW_LOGS (line, host, source, file, file_offset, shipped_at)
 FROM (
     SELECT
         $1:line::STRING,
+        $1:host::STRING,
         $1:source::STRING,
         $1:file::STRING,
         $1:file_offset::INTEGER,
@@ -103,10 +107,11 @@ MATCH_BY_COLUMN_NAME = NONE;
 CREATE PIPE IF NOT EXISTS PIPE_LOGS_SERVICE
     AUTO_INGEST = TRUE
 AS
-COPY INTO RAW_LOGS (line, source, file, file_offset, shipped_at)
+COPY INTO RAW_LOGS (line, host, source, file, file_offset, shipped_at)
 FROM (
     SELECT
         $1:line::STRING,
+        $1:host::STRING,
         $1:source::STRING,
         $1:file::STRING,
         $1:file_offset::INTEGER,
@@ -123,10 +128,11 @@ MATCH_BY_COLUMN_NAME = NONE;
 CREATE PIPE IF NOT EXISTS PIPE_HOSTMETRICS
     AUTO_INGEST = TRUE
 AS
-COPY INTO RAW_HOSTMETRICS (payload, ts)
+COPY INTO RAW_HOSTMETRICS (payload, host, ts)
 FROM (
     SELECT
         $1,                     -- keep the whole metric record (metric/value/... vary by type)
+        $1:host::STRING,
         $1:ts::TIMESTAMP_TZ
     FROM @<STAGE_NAME>/hostmetrics/
 )

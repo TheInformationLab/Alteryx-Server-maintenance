@@ -6,11 +6,14 @@ import psutil
 from loguru import logger
 
 
-def collect(disks: list[str]) -> list[dict]:
+def collect(disks: list[str], host: str = "") -> list[dict]:
     """Return a list of metric records (one per type). Each record is a plain dict
     suitable for JSON serialisation. All timestamps are ISO-8601 UTC strings.
 
-    Include:
+    Every record carries the ``host`` identifier so metrics from multiple
+    Server hosts landing in the same S3/Snowflake can be attributed correctly.
+
+    Include (each also stamped with ``"host": host``):
     - {"metric": "cpu_percent_1s", "value": psutil.cpu_percent(interval=1), "ts": ...}
     - {"metric": "memory", "total": ..., "available": ..., "used": ..., "percent": ..., "ts": ...}
       from psutil.virtual_memory()
@@ -21,7 +24,7 @@ def collect(disks: list[str]) -> list[dict]:
       disk_io from psutil.disk_io_counters(perdisk=True) — match disk to partition;
       if not found, emit a record with all zeros and a "warning" key.
     """
-    logger.debug("Collecting host metrics (disks={})", disks)
+    logger.debug("Collecting host metrics (host={} disks={})", host, disks)
     records = []
 
     # CPU metrics
@@ -29,6 +32,7 @@ def collect(disks: list[str]) -> list[dict]:
         cpu_percent = psutil.cpu_percent(interval=1)
         records.append({
             "metric": "cpu_percent_1s",
+            "host": host,
             "value": cpu_percent,
             "ts": datetime.now(timezone.utc).isoformat()
         })
@@ -41,6 +45,7 @@ def collect(disks: list[str]) -> list[dict]:
         mem = psutil.virtual_memory()
         records.append({
             "metric": "memory",
+            "host": host,
             "total": mem.total,
             "available": mem.available,
             "used": mem.used,
@@ -68,6 +73,7 @@ def collect(disks: list[str]) -> list[dict]:
 
         records.append({
             "metric": "disk_usage",
+            "host": host,
             "path": disk,
             "total": usage.total,
             "used": usage.used,
@@ -82,6 +88,7 @@ def collect(disks: list[str]) -> list[dict]:
             if io_data:
                 records.append({
                     "metric": "disk_io",
+                    "host": host,
                     "path": disk,
                     "read_bytes": io_data.read_bytes,
                     "write_bytes": io_data.write_bytes,
@@ -93,6 +100,7 @@ def collect(disks: list[str]) -> list[dict]:
                 logger.warning("Disk IO data not found for {}; emitting zeros", disk)
                 records.append({
                     "metric": "disk_io",
+                    "host": host,
                     "path": disk,
                     "read_bytes": 0,
                     "write_bytes": 0,

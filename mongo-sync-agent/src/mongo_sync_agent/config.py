@@ -91,6 +91,12 @@ class AgentConfig:
     s3: S3Config
     logs: LogsConfig
     hostmetrics: HostMetricsConfig
+    # Logical identifier for the host this agent runs on. Stamped onto every
+    # shipped log line and host-metric record so rows from multiple Server
+    # hosts landing in the same S3/Snowflake can be told apart. When unset
+    # (None), the runner falls back to the machine's network name
+    # (socket.gethostname()).
+    host_id: str | None = None
 
 
 def _require(table: dict[str, Any], key: str, field_name: str, expected_type: type) -> Any:
@@ -277,6 +283,7 @@ def load_config(path: Path) -> AgentConfig:
     spool_dir = _require(agent_raw, "spool_dir", "agent.spool_dir", str)
     log_dir = _optional(agent_raw, "log_dir", "agent.log_dir", str, _DEFAULT_LOG_DIR)
     log_level = _optional(agent_raw, "log_level", "agent.log_level", str, "WARNING")
+    host_id = _optional(agent_raw, "host_id", "agent.host_id", str, None)
 
     mongo_enabled, mongo, collections = _parse_mongo(raw.get("mongo"))
     s3_cfg = _parse_s3(raw.get("s3"))
@@ -294,4 +301,5 @@ def load_config(path: Path) -> AgentConfig:
         s3=s3_cfg,
         logs=logs_cfg,
         hostmetrics=hostmetrics_cfg,
+        host_id=host_id,
     )

@@ -30,12 +30,17 @@ class RunContext:
             upload.
         dry_run: When True, files are written and finalized locally but neither
             uploaded to S3 nor committed to the watermark state.
+        host: Logical identifier of the host this run is executing on (from
+            ``AgentConfig.host_id``, else the machine's network name). Stamped
+            onto every shipped log line and host-metric record so multi-host
+            deployments can be disambiguated downstream.
     """
 
     run_id: str
     run_dt: datetime
     spool_dir: Path
     dry_run: bool = False
+    host: str = ""
 
 
 @dataclass

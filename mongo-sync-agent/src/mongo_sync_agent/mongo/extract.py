@@ -75,7 +75,7 @@ def extract_collection(
     spool_file = spool_path(run_ctx.spool_dir, cfg.name.replace(".", "_"), "parquet")
     landing = VariantJsonLanding(strategy)
     sink = ParquetVariantSink(spool_file, landing)
-    ctx = RowContext(extracted_at=run_ctx.run_dt)
+    ctx = RowContext(extracted_at=run_ctx.run_dt, host=run_ctx.host)
 
     # The Mongo cursor is closed explicitly in finally: on any error (or an early
     # empty/return path) we must not leak the server-side cursor.

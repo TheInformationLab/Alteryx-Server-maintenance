@@ -137,7 +137,7 @@ def test_dry_run_no_upload(fake_s3, tmp_path, monkeypatch):
     monkeypatch.setattr(
         collect_mod,
         "collect",
-        lambda disks: [{"metric": "cpu_percent_1s", "value": 1.0, "ts": "2024-01-01T00:00:00Z"}],
+        lambda disks, host="": [{"metric": "cpu_percent_1s", "host": host, "value": 1.0, "ts": "2024-01-01T00:00:00Z"}],
     )
 
     cfg = _make_cfg(
@@ -155,7 +155,7 @@ def test_dry_run_control_uploads_when_not_dry(fake_s3, tmp_path, monkeypatch):
     monkeypatch.setattr(
         collect_mod,
         "collect",
-        lambda disks: [{"metric": "cpu_percent_1s", "value": 1.0, "ts": "2024-01-01T00:00:00Z"}],
+        lambda disks, host="": [{"metric": "cpu_percent_1s", "host": host, "value": 1.0, "ts": "2024-01-01T00:00:00Z"}],
     )
 
     cfg = _make_cfg(

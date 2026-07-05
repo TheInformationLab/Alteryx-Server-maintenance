@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS RAW_MONGO_AS_QUEUE (
     _id             STRING,                                        -- doc _id (hex ObjectId or plain string)
     _watermark      STRING,                                        -- canonical watermark value for this doc
     _extracted_at   TIMESTAMP_TZ,                                  -- when the agent read this doc from Mongo
+    _host           STRING,                                        -- agent host that extracted this doc (active controller under failover)
     _loaded_at      TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()        -- when Snowpipe loaded this row
 );
 
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS RAW_MONGO_AS_JOBS (
     _id             STRING,
     _watermark      STRING,
     _extracted_at   TIMESTAMP_TZ,
+    _host           STRING,
     _loaded_at      TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
 );
 
@@ -42,6 +44,7 @@ CREATE TABLE IF NOT EXISTS RAW_MONGO_AS_JOBS (
 --     _id             STRING,
 --     _watermark      STRING,
 --     _extracted_at   TIMESTAMP_TZ,
+--     _host           STRING,
 --     _loaded_at      TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
 -- );
 
@@ -51,6 +54,7 @@ CREATE TABLE IF NOT EXISTS RAW_MONGO_AS_JOBS (
 
 CREATE TABLE IF NOT EXISTS RAW_LOGS (
     line            STRING,                                        -- raw log line, verbatim
+    host            STRING,                                        -- host the line was tailed from (agent host_id / machine name)
     source          STRING,                                        -- log source name, e.g. "gallery" / "service"
     file            STRING,                                        -- name of the file the line was tailed from
     file_offset     INTEGER,                                       -- byte offset in the source file after this line
@@ -64,6 +68,7 @@ CREATE TABLE IF NOT EXISTS RAW_LOGS (
 
 CREATE TABLE IF NOT EXISTS RAW_HOSTMETRICS (
     payload         VARIANT,                                       -- full metric record (metric/value/... fields)
+    host            STRING,                                        -- host the metric was sampled on (also inside payload)
     ts              TIMESTAMP_TZ,                                  -- sample timestamp, pulled out for pruning
     _loaded_at      TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP()
 );

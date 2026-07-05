@@ -71,6 +71,22 @@ def test_parquet_roundtrip(tmp_path):
         assert stored_id == str(doc["_id"])
 
 
+def test_landing_stamps_host(tmp_path):
+    # The extraction host must land on every Mongo row so active/passive
+    # multi-controller deployments can be attributed downstream.
+    landing = _landing()
+    ctx = RowContext(extracted_at=datetime(2024, 1, 1, tzinfo=timezone.utc), host="controller-a")
+    rows = [landing.doc_to_row({"_id": ObjectId(), "n": i}, ctx) for i in range(3)]
+
+    assert all(r["_host"] == "controller-a" for r in rows)
+
+    path = tmp_path / "out.parquet"
+    sink = ParquetVariantSink(path, landing)
+    sink.write_rows(rows)
+    sink.close()
+    assert pq.read_table(str(path)).column("_host").to_pylist() == ["controller-a"] * 3
+
+
 def test_parquet_abort_no_file(tmp_path):
     landing = _landing()
     path = tmp_path / "out.parquet"

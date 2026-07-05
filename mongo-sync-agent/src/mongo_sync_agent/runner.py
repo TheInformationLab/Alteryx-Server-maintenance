@@ -8,6 +8,7 @@ state store's run-history bookkeeping, then returns a process exit code.
 
 from __future__ import annotations
 
+import socket
 import time
 import uuid
 from datetime import datetime, timezone
@@ -41,7 +42,14 @@ def run_cycle(
     # 1. Configure logging as early as possible so setup failures are captured too.
     run_id = str(uuid.uuid4())[:8]
     configure_logging(cfg.log_dir, run_id, cfg.log_level)
-    logger.info("Run starting: run_id={} log_dir={} log_level={}", run_id, cfg.log_dir, cfg.log_level)
+    # Resolve the host identifier once per run: an explicit config override if
+    # set, otherwise the machine's network name. Stamped onto every log line
+    # and host-metric record so multi-host deployments stay attributable.
+    host = cfg.host_id or socket.gethostname()
+    logger.info(
+        "Run starting: run_id={} host={} log_dir={} log_level={}",
+        run_id, host, cfg.log_dir, cfg.log_level,
+    )
 
     # 2. Acquire the single-instance lock; refuse to run concurrently with another instance.
     lock = SingleInstanceLock(Path(cfg.spool_dir) / ".lock")
@@ -67,7 +75,7 @@ def run_cycle(
             logger.warning("Swept {} orphaned spool director{} from prior crashed run(s)",
                            orphans_swept, "y" if orphans_swept == 1 else "ies")
 
-        run_ctx = RunContext(run_id=run_id, run_dt=run_dt, spool_dir=spool_dir, dry_run=dry_run)
+        run_ctx = RunContext(run_id=run_id, run_dt=run_dt, spool_dir=spool_dir, dry_run=dry_run, host=host)
         uploader = S3Uploader(cfg.s3.bucket, cfg.s3.prefix, cfg.s3.region)
 
         results: list[UnitResult] = []
@@ -108,7 +116,7 @@ def run_cycle(
             from .spool import spool_path
 
             peak.sample()
-            records = collect(cfg.hostmetrics.disks)
+            records = collect(cfg.hostmetrics.disks, host=run_ctx.host)
             logger.info("Host metrics module: collecting")
             if records:
                 logger.debug("Collected {} host metric record(s)", len(records))

@@ -88,6 +88,37 @@ def test_profiles_differ_only_in_mongo():
     assert standalone_sans_mongo == embedded_sans_mongo
 
 
+def test_host_id_defaults_to_none(tmp_path):
+    # Not set in config -> None, so the runner falls back to the machine name.
+    path = _write_config(
+        tmp_path,
+        """
+[[mongo.collections]]
+name = "coll1"
+mode = "append_only"
+""",
+    )
+    cfg = load_config(path)
+    assert cfg.host_id is None
+
+
+def test_host_id_explicit_value(tmp_path):
+    content = """
+[agent]
+state_db = "state.db"
+spool_dir = "spool"
+log_dir = "logs"
+host_id = "alteryx-controller-prod-01"
+
+[s3]
+bucket = "test-bucket"
+"""
+    path = tmp_path / "config.toml"
+    path.write_text(content, encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.host_id == "alteryx-controller-prod-01"
+
+
 def test_bad_mode_raises_config_error(tmp_path):
     path = _write_config(
         tmp_path,

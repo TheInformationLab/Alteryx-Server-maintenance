@@ -21,6 +21,13 @@ spool_dir = "C:/ProgramData/mongo-sync-agent/spool"
 # The file sink (msa.log) always captures DEBUG regardless of this setting.
 # Valid values: DEBUG, INFO, WARNING, ERROR, CRITICAL  (default: WARNING)
 log_level = "WARNING"
+# Logical name identifying this host. It is stamped onto every shipped log
+# line and host-metric record so that, when several Server hosts land data in
+# the same S3 bucket / Snowflake tables, rows can be attributed to the machine
+# they came from. When omitted, the agent uses the machine's network name
+# (socket.gethostname()). Set an explicit, stable value if the OS hostname is
+# not meaningful to you (e.g. "alteryx-controller-prod-01").
+# host_id = "alteryx-controller-prod-01"
 
 [mongo]
 enabled = true
