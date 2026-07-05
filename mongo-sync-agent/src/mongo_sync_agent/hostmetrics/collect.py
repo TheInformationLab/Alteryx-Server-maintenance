@@ -1,9 +1,136 @@
 """psutil-based host metrics collection."""
 
+import ctypes
+import sys
 from datetime import datetime, timezone
 
 import psutil
 from loguru import logger
+
+# --- Windows drive-letter -> physical-drive mapping ------------------------
+#
+# On Windows (the target platform), psutil.disk_io_counters(perdisk=True) keys
+# its result by *physical drive* ("PhysicalDrive0", "PhysicalDrive1", ...), not
+# by the drive letters ("C:", "D:") the agent is configured with. There is no
+# psutil API to translate one to the other, and a single volume can span more
+# than one physical disk, so we resolve the mapping ourselves via the Win32
+# IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS control code. This uses only the stdlib
+# ``ctypes`` module -- no extra dependency (important for the PyInstaller
+# one-file exe) and no Administrator rights (the volume handle is opened with
+# zero access, which is enough to query its disk extents).
+
+_IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = 0x560000
+_FILE_SHARE_READ = 0x1
+_FILE_SHARE_WRITE = 0x2
+_OPEN_EXISTING = 3
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+# A volume spanning this many physical disks is implausible; the buffer is
+# sized generously and DeviceIoControl reports the true count regardless.
+_MAX_EXTENTS = 32
+
+
+def _windows_volume_disk_numbers(disk: str) -> list[int]:
+    """Return the physical disk numbers backing a Windows volume.
+
+    ``disk`` is a drive letter or mount point such as ``"C:"`` / ``"C:\\"``.
+    A volume can span multiple physical disks (spanned/striped volumes), so the
+    returned list may hold more than one number. Raises ``OSError`` if the
+    volume can't be opened or queried.
+    """
+    from ctypes import wintypes
+
+    class DISK_EXTENT(ctypes.Structure):
+        _fields_ = [
+            ("DiskNumber", wintypes.DWORD),
+            ("StartingOffset", wintypes.LARGE_INTEGER),
+            ("ExtentLength", wintypes.LARGE_INTEGER),
+        ]
+
+    class VOLUME_DISK_EXTENTS(ctypes.Structure):
+        _fields_ = [
+            ("NumberOfDiskExtents", wintypes.DWORD),
+            ("Extents", DISK_EXTENT * _MAX_EXTENTS),
+        ]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = wintypes.HANDLE
+    k.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    k.DeviceIoControl.restype = wintypes.BOOL
+    k.DeviceIoControl.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD,
+        wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID,
+    ]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    # Normalise "C:" / "C:\\" / "C:/" to the volume device path r"\\.\C:".
+    letter = disk.rstrip("\\/").rstrip(":")
+    volume_path = "\\\\.\\" + letter + ":"
+
+    handle = k.CreateFileW(
+        volume_path, 0, _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+        None, _OPEN_EXISTING, 0, None,
+    )
+    if handle == _INVALID_HANDLE_VALUE:
+        raise OSError(ctypes.get_last_error(), f"could not open volume {volume_path}")
+    try:
+        extents = VOLUME_DISK_EXTENTS()
+        returned = wintypes.DWORD(0)
+        ok = k.DeviceIoControl(
+            handle, _IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, None, 0,
+            ctypes.byref(extents), ctypes.sizeof(extents), ctypes.byref(returned), None,
+        )
+        if not ok:
+            raise OSError(ctypes.get_last_error(), f"could not query disk extents for {volume_path}")
+        count = min(extents.NumberOfDiskExtents, _MAX_EXTENTS)
+        return [extents.Extents[i].DiskNumber for i in range(count)]
+    finally:
+        k.CloseHandle(handle)
+
+
+def _resolve_perdisk_keys(disk: str) -> list[str] | None:
+    """Map a configured disk to the psutil ``perdisk`` keys backing it.
+
+    Returns a list of ``"PhysicalDriveN"`` keys on Windows, or ``None`` when the
+    mapping can't be resolved (non-Windows platform, or the volume can't be
+    queried) so the caller can fall back to the graceful zero+warning record.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        numbers = _windows_volume_disk_numbers(disk)
+    except Exception as e:
+        logger.debug("Could not map disk {} to a physical drive: {}", disk, e)
+        return None
+    if not numbers:
+        return None
+    return [f"PhysicalDrive{n}" for n in numbers]
+
+
+def _sum_disk_io(keys: list[str], disk_io_counters: dict) -> dict | None:
+    """Sum the psutil IO counters for ``keys`` (a volume may span several disks).
+
+    Returns a dict of summed read/write byte and operation counts, or ``None``
+    if none of the keys are present in ``disk_io_counters``.
+    """
+    present = [key for key in keys if key in disk_io_counters]
+    if not present:
+        return None
+    read_bytes = write_bytes = read_count = write_count = 0
+    for key in present:
+        counters = disk_io_counters[key]
+        read_bytes += counters.read_bytes
+        write_bytes += counters.write_bytes
+        read_count += counters.read_count
+        write_count += counters.write_count
+    return {
+        "read_bytes": read_bytes,
+        "write_bytes": write_bytes,
+        "read_count": read_count,
+        "write_count": write_count,
+    }
 
 
 def collect(disks: list[str], host: str = "") -> list[dict]:
@@ -21,8 +148,11 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
       {"metric": "disk_usage", "path": disk, "total": ..., "used": ..., "free": ..., "percent": ..., "ts": ...}
       {"metric": "disk_io", "path": disk, "read_bytes": ..., "write_bytes": ...,
        "read_count": ..., "write_count": ..., "ts": ...}
-      disk_io from psutil.disk_io_counters(perdisk=True) — match disk to partition;
-      if not found, emit a record with all zeros and a "warning" key.
+      disk_io from psutil.disk_io_counters(perdisk=True). On Windows those
+      counters are keyed by physical drive, so the configured drive letter is
+      mapped to its backing physical drive(s) (see _resolve_perdisk_keys) and
+      their counters summed. If the mapping genuinely can't be resolved, emit a
+      record with all zeros and a "warning" key.
     """
     logger.debug("Collecting host metrics (host={} disks={})", host, disks)
     records = []
@@ -81,15 +211,24 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
         logger.debug("Disk {}: {}% used", disk, usage.percent)
 
         try:
-            io_data = disk_io_counters.get(disk)
-            if io_data:
+            # psutil keys perdisk counters by physical drive on Windows, so a
+            # direct drive-letter lookup misses. Try a direct match first (e.g.
+            # a Linux device name, or a key that already is a physical drive),
+            # then fall back to mapping the volume to its physical drive(s).
+            if disk in disk_io_counters:
+                io_keys = [disk]
+            else:
+                io_keys = _resolve_perdisk_keys(disk)
+
+            io_data = _sum_disk_io(io_keys, disk_io_counters) if io_keys else None
+            if io_data is not None:
                 records.append({
                     "metric": "disk_io",
                     "path": disk,
-                    "read_bytes": io_data.read_bytes,
-                    "write_bytes": io_data.write_bytes,
-                    "read_count": io_data.read_count,
-                    "write_count": io_data.write_count,
+                    "read_bytes": io_data["read_bytes"],
+                    "write_bytes": io_data["write_bytes"],
+                    "read_count": io_data["read_count"],
+                    "write_count": io_data["write_count"],
                     "ts": datetime.now(timezone.utc).isoformat()
                 })
             else:
