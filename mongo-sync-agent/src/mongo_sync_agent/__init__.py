@@ -1,5 +1,5 @@
 """Alteryx MongoDB → S3 / Snowflake incremental sync agent."""
-__version__ = "0.1.0"
+from ._version import __version__
 
 def run(config_path: str, only: set[str] | None = None, dry_run: bool = False) -> int:
     """Run one sync cycle. Returns exit code: 0=ok, 1=partial failure, 2=fatal."""

@@ -1,0 +1,141 @@
+name: Release mongo-sync-agent
+
+# Tag-driven release pipeline. Both channels live on `master` and are
+# distinguished purely by the tag shape (see mongo-sync-agent/RELEASING.md):
+#
+#   v1.2.0-beta.1   -> BETA channel  -> published as a GitHub *pre-release*
+#   v1.2.0          -> RELEASE       -> published as the "Latest" release
+#
+# Both build the identical self-contained Windows msa.exe bundle; only the
+# pre-release flag and the release notes differ.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'          # release   e.g. v0.1.0
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'        # pre-release e.g. v0.1.0-beta.1
+
+permissions:
+  contents: write        # required for gh release create to upload assets
+
+defaults:
+  run:
+    shell: pwsh
+    working-directory: mongo-sync-agent
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history so release notes can diff tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Derive version and channel from tag
+        id: meta
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          if ($version -match '-(alpha|beta|rc)') {
+            $prerelease = 'true'; $channel = 'beta'
+          } else {
+            $prerelease = 'false'; $channel = 'release'
+          }
+          "tag=$tag"               | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "version=$version"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "prerelease=$prerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "channel=$channel"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building $channel bundle for version $version (prerelease=$prerelease)"
+
+      - name: Stamp version into the package
+        run: |
+          $version = "${{ steps.meta.outputs.version }}"
+          @"
+          # Overwritten by the release pipeline at build time (see RELEASING.md).
+          __version__ = "$version"
+          "@ | Set-Content -Path src/mongo_sync_agent/_version.py -Encoding utf8
+
+      - name: Install the agent and build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          pip install pyinstaller
+
+      - name: Build self-contained msa.exe
+        run: |
+          pyinstaller --onefile --name msa `
+            --collect-all pyarrow `
+            --collect-all boto3 `
+            --collect-all botocore `
+            --collect-submodules pymongo `
+            deploy/pyinstaller_entry.py
+
+      - name: Smoke-test the frozen binary
+        run: |
+          $reported = & dist/msa.exe --version
+          Write-Host "msa.exe --version -> $reported"
+          if ($reported -notmatch [regex]::Escape("${{ steps.meta.outputs.version }}")) {
+            throw "Frozen binary reported '$reported' but expected version '${{ steps.meta.outputs.version }}'"
+          }
+
+      - name: Assemble distribution bundle
+        id: bundle
+        run: |
+          $stage = "mongo-sync-agent_${{ steps.meta.outputs.tag }}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage/deploy" | Out-Null
+          Copy-Item dist/msa.exe                       -Destination $stage/
+          Copy-Item -Recurse config                    -Destination $stage/config
+          Copy-Item -Recurse sql                       -Destination $stage/sql
+          Copy-Item deploy/Register-MongoSyncTask.ps1  -Destination $stage/deploy/
+          Copy-Item README.md                          -Destination $stage/
+          Copy-Item RELEASING.md                       -Destination $stage/
+          $zip = "$stage.zip"
+          Compress-Archive -Path $stage -DestinationPath $zip -Force
+          "zip=$zip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Built $zip"
+
+      - name: Write release notes
+        run: |
+          $channel = "${{ steps.meta.outputs.channel }}"
+          $tag = "${{ steps.meta.outputs.tag }}"
+          if ($channel -eq 'beta') {
+            $heading = "Beta build ``$tag`` — for the development / testing area, not production."
+          } else {
+            $heading = "Release build ``$tag``."
+          }
+          @"
+          $heading
+
+          ## Install (Windows Alteryx Server host, no Python required)
+
+          1. Download and unzip ``mongo-sync-agent_$tag.zip``.
+          2. Copy ``msa.exe`` and the ``config/`` folder to the host
+             (e.g. under ``C:\ProgramData\mongo-sync-agent\``).
+          3. Copy an example config to ``config\config.toml`` and edit it.
+          4. Test a run: ``msa.exe --config config\config.toml --dry-run``
+          5. Schedule it (no Python needed) with:
+             ``deploy\Register-MongoSyncTask.ps1 -ExePath .\msa.exe -ConfigPath .\config\config.toml -WorkingDir .``
+
+          See ``README.md`` for full setup and ``RELEASING.md`` for the
+          release process.
+          "@ | Set-Content -Path release-notes.md -Encoding utf8
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ghArgs = @(
+            "${{ steps.meta.outputs.tag }}",
+            "${{ steps.bundle.outputs.zip }}",
+            "--title", "mongo-sync-agent ${{ steps.meta.outputs.tag }}",
+            "--notes-file", "release-notes.md"
+          )
+          if ("${{ steps.meta.outputs.prerelease }}" -eq 'true') { $ghArgs += "--prerelease" }
+          gh release create @ghArgs

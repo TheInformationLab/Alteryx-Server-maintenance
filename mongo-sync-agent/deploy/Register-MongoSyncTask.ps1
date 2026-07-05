@@ -4,21 +4,35 @@
     on a recurring interval.
 
 .DESCRIPTION
-    Creates (or replaces) a Scheduled Task named "MongoSyncAgent" that invokes
-    the agent's Python module every 30 minutes, indefinitely, using the
-    supplied Python interpreter and configuration file.
+    Creates (or replaces) a Scheduled Task named "MongoSyncAgent" that runs the
+    agent every 30 minutes, indefinitely. Two invocation modes are supported:
+
+      * EXE mode (client / production install): pass -ExePath pointing at the
+        packaged, self-contained msa.exe. No Python is required on the host.
+        This is the recommended mode for the release bundle.
+
+      * Python mode (development / source install): pass -PythonPath pointing
+        at the Python interpreter (ideally the agent's venv) that will run
+        `-m mongo_sync_agent`.
+
+    If -ExePath is supplied it takes precedence and -PythonPath is ignored.
 
 .USAGE
     Run from an elevated PowerShell prompt on the host where the agent is
-    installed:
+    installed.
 
-        .\Register-MongoSyncTask.ps1
+    Client / production (exe bundle), register the packaged executable:
+
+        .\Register-MongoSyncTask.ps1 `
+            -ExePath "C:\ProgramData\mongo-sync-agent\msa.exe" `
+            -ConfigPath "C:\ProgramData\mongo-sync-agent\config\config.toml" `
+            -WorkingDir "C:\ProgramData\mongo-sync-agent"
 
     Preview the action without registering anything:
 
-        .\Register-MongoSyncTask.ps1 -WhatIf
+        .\Register-MongoSyncTask.ps1 -ExePath "...\msa.exe" -WhatIf
 
-    Override the defaults, e.g. to run the task under a service account:
+    Development (source install), run under a service account via Python:
 
         .\Register-MongoSyncTask.ps1 `
             -PythonPath "D:\mongo-sync-agent\.venv\Scripts\pythonw.exe" `
@@ -28,11 +42,13 @@
             -TaskPassword (Read-Host -AsSecureString "Password")
 
 .NOTES
-    IMPORTANT: Customise $PythonPath below (or pass -PythonPath) to point at
-    the Python executable inside the mongo-sync-agent virtual environment
-    (venv), e.g. "C:\path\to\venv\Scripts\pythonw.exe". Using pythonw.exe
-    avoids a console window flashing up on every run; substitute python.exe
-    if you want console output captured by Scheduled Tasks history instead.
+    EXE mode is the intended path for client hosts that have no Python: point
+    -ExePath at the msa.exe shipped in the release zip.
+
+    In Python mode, prefer the pythonw.exe inside the mongo-sync-agent venv
+    (not a system-wide Python). Using pythonw.exe avoids a console window
+    flashing up on every run; substitute python.exe if you want console output
+    captured by Scheduled Tasks history instead.
 
     Registering with -RunLevel Highest ensures the task can read Alteryx's
     ProgramData paths, RuntimeSettings.xml, and any other locations that
@@ -41,8 +57,14 @@
 
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
-    # Path to the Python interpreter to run the agent with. This SHOULD be the
-    # interpreter inside the mongo-sync-agent venv, not a system-wide Python.
+    # Path to the packaged, self-contained msa.exe (from the release bundle).
+    # When set, the task runs `msa.exe --config <ConfigPath>` directly and no
+    # Python is needed on the host. Takes precedence over -PythonPath.
+    [string]$ExePath = "",
+
+    # Path to the Python interpreter to run the agent with (development / source
+    # install only). This SHOULD be the interpreter inside the mongo-sync-agent
+    # venv, not a system-wide Python. Ignored when -ExePath is supplied.
     [string]$PythonPath = "C:\ProgramData\mongo-sync-agent\venv\Scripts\pythonw.exe",
 
     # Path to the agent's TOML configuration file.
@@ -71,19 +93,33 @@ $ErrorActionPreference = "Stop"
 $builtInAccounts = @("SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE", "NT AUTHORITY\SYSTEM")
 $isBuiltInAccount = $builtInAccounts -contains $TaskUser.ToUpper()
 
-if (-not (Test-Path -LiteralPath $PythonPath)) {
-    Write-Warning "PythonPath '$PythonPath' was not found on disk. Continuing anyway — verify this points at the mongo-sync-agent venv's python(w).exe before relying on the task."
+# Decide the invocation mode. -ExePath (packaged msa.exe) takes precedence over
+# -PythonPath (source/venv install).
+$useExe = -not [string]::IsNullOrWhiteSpace($ExePath)
+
+if ($useExe) {
+    if (-not (Test-Path -LiteralPath $ExePath)) {
+        Write-Warning "ExePath '$ExePath' was not found on disk. Continuing anyway — verify this points at the packaged msa.exe before relying on the task."
+    }
+    # Build the action: msa.exe --config "<config>"
+    $execute = $ExePath
+    $argumentList = "--config `"$ConfigPath`""
+}
+else {
+    if (-not (Test-Path -LiteralPath $PythonPath)) {
+        Write-Warning "PythonPath '$PythonPath' was not found on disk. Continuing anyway — verify this points at the mongo-sync-agent venv's python(w).exe before relying on the task (or pass -ExePath to use the packaged msa.exe instead)."
+    }
+    # Build the action: <python> -m mongo_sync_agent --config "<config>"
+    $execute = $PythonPath
+    $argumentList = "-m mongo_sync_agent --config `"$ConfigPath`""
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     Write-Warning "ConfigPath '$ConfigPath' was not found on disk. Continuing anyway — verify the configuration file exists before relying on the task."
 }
 
-# Build the action: <python> -m mongo_sync_agent --config "<config>"
-$argumentList = "-m mongo_sync_agent --config `"$ConfigPath`""
-
 $action = New-ScheduledTaskAction `
-    -Execute $PythonPath `
+    -Execute $execute `
     -Argument $argumentList `
     -WorkingDirectory $WorkingDir
 
@@ -140,16 +176,18 @@ if (-not $isBuiltInAccount) {
     $registerParams["Password"] = $plainPassword
 }
 
+$modeLabel = if ($useExe) { "Exe" } else { "Python" }
+
 if ($PSCmdlet.ShouldProcess("Task Scheduler", "Register scheduled task '$TaskName'")) {
     Register-ScheduledTask @registerParams | Out-Null
     Write-Host "Scheduled task '$TaskName' registered: runs every 30 minutes as '$TaskUser'."
-    Write-Host "  Python:  $PythonPath"
+    Write-Host "  $($modeLabel):  $execute"
     Write-Host "  Config:  $ConfigPath"
     Write-Host "  Working: $WorkingDir"
 }
 else {
     Write-Host "WhatIf: would register scheduled task '$TaskName' with:"
-    Write-Host "  Action:    $PythonPath $argumentList"
+    Write-Host "  Action:    $execute $argumentList"
     Write-Host "  Trigger:   every 30 minutes, indefinitely"
     Write-Host "  Run as:    $TaskUser (RunLevel: Highest)"
     Write-Host "  Working:   $WorkingDir"

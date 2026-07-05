@@ -1,5 +1,7 @@
 import argparse, sys
 
+from ._version import __version__
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="msa",
@@ -14,7 +16,7 @@ def main(argv=None):
                         help="Only extract this collection (mongo module only).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Process data but do not upload to S3 or advance watermarks.")
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args(argv)
 
