@@ -70,12 +70,16 @@ create it until you actually need it.
 
 - Versions follow [SemVer](https://semver.org/): `MAJOR.MINOR.PATCH`, with
   `-beta.N` / `-rc.N` pre-release suffixes.
-- The version string reported by `msa --version` lives in a single file:
+- The version lives in a **single file**:
   [`src/mongo_sync_agent/_version.py`](src/mongo_sync_agent/_version.py).
+  `pyproject.toml` declares `dynamic = ["version"]` and reads it from there, so
+  packaging metadata (`pip show`, `importlib.metadata`) and `msa --version`
+  always agree — there is no second place to keep in sync.
 - The release pipeline **overwrites `_version.py` with the exact tag** at build
-  time, so a packaged `msa.exe` always reports the tag it was built from.
-- `pyproject.toml`'s `version` is the packaging identity; bump it in the same
-  commit when you start work on a new version (see the checklist below).
+  time, so a packaged `msa.exe` (and its `pip`-built metadata) always report the
+  tag they were built from.
+- The value committed to `_version.py` is the current in-development version;
+  bump it when you start work on a new version (see the checklist below).
 
 ## 4. How the pipeline works
 
@@ -98,7 +102,9 @@ which:
 From a clean, green `master`:
 
 ```bash
-# 1. Make sure pyproject.toml version reflects the target, e.g. 0.1.0
+# 1. Make sure src/mongo_sync_agent/_version.py reflects the target, e.g. 0.1.0
+#    (the pipeline stamps the exact tag at build time regardless, but keeping
+#    the committed value current avoids a confusing dev-vs-release mismatch).
 # 2. Tag the beta and push the tag:
 git tag v0.1.0-beta.1
 git push origin v0.1.0-beta.1
@@ -129,7 +135,7 @@ clients can download.
 ## 7. Release checklist
 
 - [ ] `master` is green (tests pass: `pytest`).
-- [ ] `pyproject.toml` `version` matches the intended `MAJOR.MINOR.PATCH`.
+- [ ] `src/mongo_sync_agent/_version.py` matches the intended `MAJOR.MINOR.PATCH`.
 - [ ] `README.md` reflects any behaviour/config changes.
 - [ ] Tag pushed (`v…-beta.N` for beta, `v…` for release).
 - [ ] Workflow succeeded and the Release/pre-release appears with the zip.

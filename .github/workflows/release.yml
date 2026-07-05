@@ -42,7 +42,10 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $version = $tag.TrimStart('v')
-          if ($version -match '-(alpha|beta|rc)') {
+          # ANY pre-release suffix (the tag glob triggers on 'vX.Y.Z-*') is
+          # treated as a pre-release, so a stray -hotfix/-preview/-dev tag can
+          # never be published as the client-facing 'Latest' release.
+          if ($version -match '-') {
             $prerelease = 'true'; $channel = 'beta'
           } else {
             $prerelease = 'false'; $channel = 'release'

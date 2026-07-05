@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mongo-sync-agent"
-version = "0.1.0"
+# Version is single-sourced from src/mongo_sync_agent/_version.py (which the
+# release pipeline stamps from the git tag), so packaging metadata and
+# `msa --version` never drift.
+dynamic = ["version"]
 requires-python = ">=3.11"
 dependencies = [
     "pymongo>=4.7",
@@ -19,6 +22,9 @@ dev = ["pytest>=8.0", "pytest-mock>=3.14"]
 
 [project.scripts]
 msa = "mongo_sync_agent.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "mongo_sync_agent._version.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -13,7 +13,7 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
     Every record carries the ``host`` identifier so metrics from multiple
     Server hosts landing in the same S3/Snowflake can be attributed correctly.
 
-    Include (each also stamped with ``"host": host``):
+    Include (``host`` is added to every record just before return):
     - {"metric": "cpu_percent_1s", "value": psutil.cpu_percent(interval=1), "ts": ...}
     - {"metric": "memory", "total": ..., "available": ..., "used": ..., "percent": ..., "ts": ...}
       from psutil.virtual_memory()
@@ -32,7 +32,6 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
         cpu_percent = psutil.cpu_percent(interval=1)
         records.append({
             "metric": "cpu_percent_1s",
-            "host": host,
             "value": cpu_percent,
             "ts": datetime.now(timezone.utc).isoformat()
         })
@@ -45,7 +44,6 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
         mem = psutil.virtual_memory()
         records.append({
             "metric": "memory",
-            "host": host,
             "total": mem.total,
             "available": mem.available,
             "used": mem.used,
@@ -73,7 +71,6 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
 
         records.append({
             "metric": "disk_usage",
-            "host": host,
             "path": disk,
             "total": usage.total,
             "used": usage.used,
@@ -88,7 +85,6 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
             if io_data:
                 records.append({
                     "metric": "disk_io",
-                    "host": host,
                     "path": disk,
                     "read_bytes": io_data.read_bytes,
                     "write_bytes": io_data.write_bytes,
@@ -100,7 +96,6 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
                 logger.warning("Disk IO data not found for {}; emitting zeros", disk)
                 records.append({
                     "metric": "disk_io",
-                    "host": host,
                     "path": disk,
                     "read_bytes": 0,
                     "write_bytes": 0,
@@ -111,6 +106,11 @@ def collect(disks: list[str], host: str = "") -> list[dict]:
                 })
         except Exception as e:
             logger.warning("Failed to collect disk IO for {}: {}", disk, e)
+
+    # Stamp the host onto every record in one place so the guarantee holds
+    # structurally: any metric added above cannot forget to carry the host.
+    for record in records:
+        record["host"] = host
 
     logger.debug("Host metrics collected: {} record(s)", len(records))
     return records
