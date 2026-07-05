@@ -81,8 +81,15 @@ Key design points:
 
 ## 3. Installation
 
-From the repository root (`mongo-sync-agent/`), ideally inside a dedicated
-virtual environment:
+**Clients / production Alteryx Server hosts (no Python required):** download
+the latest release zip from the project's GitHub **Releases** page, unzip it,
+and use the self-contained `msa.exe` — see
+[§13. Releasing & distribution](#13-releasing--distribution) and
+[`RELEASING.md`](RELEASING.md) for the full install steps. Nothing needs to be
+installed on the host.
+
+**From source (development / testing):** from `mongo-sync-agent/`, ideally
+inside a dedicated virtual environment:
 
 ```
 pip install -e .
@@ -228,7 +235,19 @@ escape hatch:
 ## 7. Scheduling — Windows Scheduled Task
 
 The agent is designed to be invoked on a recurring schedule rather than run
-as a long-lived service. On Windows, use the provided registration script:
+as a long-lived service. On Windows, use the provided registration script,
+which supports two modes.
+
+**Client / production (packaged `msa.exe`, no Python on the host):**
+
+```powershell
+.\deploy\Register-MongoSyncTask.ps1 `
+    -ExePath "C:\ProgramData\mongo-sync-agent\msa.exe" `
+    -ConfigPath "C:\ProgramData\mongo-sync-agent\config\config.toml" `
+    -WorkingDir "C:\ProgramData\mongo-sync-agent"
+```
+
+**Development / source install (via a venv Python):**
 
 ```powershell
 .\deploy\Register-MongoSyncTask.ps1 `
@@ -236,6 +255,8 @@ as a long-lived service. On Windows, use the provided registration script:
     -ConfigPath "C:\ProgramData\mongo-sync-agent\config\config.toml" `
     -WorkingDir "C:\ProgramData\mongo-sync-agent"
 ```
+
+`-ExePath` takes precedence over `-PythonPath` when both are supplied.
 
 Run it from an elevated PowerShell prompt (it registers the task to run with
 `RunLevel Highest`, needed to read some Alteryx/ProgramData paths). Add
@@ -258,7 +279,78 @@ while keeping the overlap-window re-reads and S3 PUT volume modest. There is
 no benefit to running much more often than this given the agent's
 poll-based, at-least-once design.
 
-## 8. Snowflake setup
+## 8. Multi-controller / high-availability deployments
+
+Some Alteryx Server estates run more than one Controller node in an
+**active/passive failover** arrangement: at any moment exactly one node is the
+active Controller (recording jobs and writing Gallery/Service logs), the
+other(s) stand by, and **all nodes share a single MongoDB instance**. The
+agent supports this; the key facts to deploy it correctly are below.
+
+### Every row is stamped with its host
+
+Every record the agent emits — Mongo documents (`_host`), shipped log lines
+(`host`), and host metrics (`host`) — carries the identifier of the machine
+that produced it (from `[agent] host_id`, else the OS machine name; see §4).
+This is what lets you tell, downstream in Snowflake, which node was active when
+a given row was produced, and to attribute host metrics to the right box.
+
+Choose your `host_id` convention deliberately:
+
+- **Per-node identity** (recommended): leave `host_id` unset, or set a distinct
+  value per node (`controller-a`, `controller-b`). You can see exactly which
+  physical node extracted each row and which was active over time.
+- **Single cluster identity**: set the *same* `host_id` on every node if you
+  would rather treat the pair as one logical source and don't care which
+  physical node was active.
+
+### Where to run the agent, per module
+
+- **Logs and host metrics are host-local.** Run the agent on **every** node so
+  each ships its own files. The active node produces the Gallery logs; a
+  standby mostly produces its own host metrics and Service logs. This is
+  always safe — no two nodes share these files.
+- **Mongo is a shared source.** Because all nodes point at the *same* MongoDB,
+  you do **not** want two agents extracting the same collections concurrently —
+  that doubles S3/Snowpipe volume (correctness still holds via the
+  at-least-once + `MERGE` design in §6, but the work is wasted). In a true
+  active/passive setup where only the active node runs the agent, this never
+  arises. If the agent runs on standby nodes too, restrict them to the
+  host-local modules and let only the active node do Mongo:
+
+  ```
+  # On a standby node (no Mongo extraction):
+  msa --config config.toml --only logs hostmetrics
+  ```
+
+### Watermark state on failover
+
+The agent's watermark/offset state is a **local SQLite DB** (`[agent]
+state_db`). That has one important consequence when the active role moves:
+
+- **If you keep per-node state** (the default — each node has its own
+  `state_db` on local disk), a node that becomes active resumes from *its own*
+  last watermark. Thanks to the mandatory overlap window and inclusive
+  boundaries (§6), this never loses data — but if that node's state is stale
+  (it hasn't been active for a while) it will re-read everything since its last
+  run, and the `MERGE` layer dedupes the overlap. Safe, occasionally a larger
+  re-scan. Setting a sensible `initial_watermark` on a freshly provisioned node
+  avoids a full historical re-scan on its first activation.
+
+- **If you want seamless failover**, point `state_db` (and `spool_dir`) at the
+  **shared/clustered storage that follows the active role**, so whichever node
+  is active reads and writes the same watermarks and picks up exactly where the
+  other left off. This is safe *specifically because only one node is active at
+  a time* — SQLite must never be written by two nodes at once, and the
+  active/passive model guarantees a single writer. Do **not** put the state DB
+  on a plain SMB share written by multiple concurrently-running agents.
+
+For the common active/passive case the simplest correct recipe is: run the
+agent on the active node (failover brings up the agent on whichever node is
+active), keep Mongo extraction to that single active agent, and either accept
+the bounded re-scan on failover or share the state DB on the failover volume.
+
+## 9. Snowflake setup
 
 Snowflake-side DDL/DML artefacts live under `sql/`. Apply them in order:
 
@@ -281,7 +373,7 @@ to that SQS queue (this is a one-time manual step in the S3 console or via
 `aws s3api put-bucket-notification-configuration`) — Snowflake cannot
 configure this on your bucket for you.
 
-## 9. Running manually / testing
+## 10. Running manually / testing
 
 Run a dry run against the standalone example config (processes data but
 does not upload to S3 or advance watermarks):
@@ -306,7 +398,7 @@ Other useful flags (see `msa --help`):
 - `--dry-run` — process everything but skip the S3 upload and watermark
   advance, useful for validating configuration changes safely.
 
-## 10. Known limitations
+## 11. Known limitations
 
 Please read this section before treating the warehouse copy as anything
 more than what it is. Being upfront about these constraints is preferable
@@ -355,7 +447,7 @@ to discovering them by surprise:
   accordingly, and flag it to your Alteryx account team if you rely on it in
   production.
 
-## 11. Running the test suite
+## 12. Running the test suite
 
 Install the `dev` extra first (`pip install -e .[dev]`), then:
 
@@ -372,3 +464,17 @@ skipped automatically when that variable is not set. The `slow` marker
 gates a small number of longer-running, empirically-verified tests (e.g.
 confirming memory usage stays bounded over a large synthetic extraction)
 that are not part of the default fast unit-test run.
+
+## 13. Releasing & distribution
+
+Releases are **tag-driven** and built automatically by GitHub Actions
+([`.github/workflows/release.yml`](../.github/workflows/release.yml)): pushing
+a `v…` tag builds a self-contained Windows `msa.exe` bundle and publishes it as
+a GitHub Release. Beta and release channels share one `master` branch and are
+distinguished only by the tag shape:
+
+- `v1.2.0-beta.1` → **pre-release** (for the dev/testing area)
+- `v1.2.0` → **release** (client-facing)
+
+The full branching strategy, versioning scheme, and step-by-step process for
+cutting a beta or a release is documented in **[`RELEASING.md`](RELEASING.md)**.
